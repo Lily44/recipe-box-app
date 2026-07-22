@@ -268,38 +268,50 @@ function compressImage(file, maxWidth = 1000, quality = 0.72) {
   });
 }
 
-async function parseRecipeWithAI(rawText) {
-  const prompt = `You will be given raw, informally-written recipe notes copied from someone's notes app. They may have no headers, inconsistent formatting, and trailing asides that aren't real steps.
+const INGREDIENT_QUANTITY_START = /^(\d+(\.\d+)?|\d+\s*\/\s*\d+|[¼½¾⅓⅔⅛⅜⅝⅞]|\d+\s+\d+\s*\/\s*\d+|scant\s|generous\s|a\s+pinch|a\s+dash)/i;
+const INGREDIENT_UNIT_WORDS = /\b(cups?|tsp|teaspoons?|tbsp|tablespoons?|oz|ounces?|lbs?|pounds?|grams?|kg|ml|liters?|litres?|pinch(es)?|dash(es)?|cloves?|slices?|cans?|packages?|sticks?|bunch(es)?|handful(s)?)\b/i;
+const STEP_VERBS = /\b(bake|mix|stir|whisk|simmer|chill|preheat|combine|pour|fold|knead|roll|chop|dice|mince|season|garnish|serve|cook|boil|fry|saut[eé]|grill|roast|blend|whip|beat|drain|rinse|cover|rest|cool|refrigerate|freeze|place|transfer|spread|sprinkle|arrange|remove|let\s+(it|the|cool|rest|sit)|set\s+aside)\b/i;
+const TEMP_PATTERN = /\b\d{3}\s?°?\s?(F|C)?\b/;
+const NOTE_START = /^(note|notes|tip|tips|variation|variations|p\.?s\.?)[:\-]/i;
 
-Extract structured recipe data. Respond with ONLY a raw JSON object, no markdown fences, no preamble, matching exactly this shape:
-{"title": string, "ingredients": string[], "steps": string[], "notes": string}
+function parseRecipeHeuristically(rawText) {
+  const lines = rawText
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
 
-Rules:
-- "ingredients" are lines with quantities or food items, even without a header.
-- "steps" are cooking instructions in order, each a short standalone sentence.
-- "notes" is a single string for asides, questions, or variations that aren't ingredients or steps (e.g. "Add vanilla and cinnamon?"). Use an empty string if there are none.
-- If no clear title exists, infer a short, plain one from the content.
-- Do not invent ingredients or steps that aren't implied by the text.
+  let title = "";
+  const ingredients = [];
+  const steps = [];
+  const notesLines = [];
 
-Raw notes:
-"""
-${rawText}
-"""`;
+  lines.forEach((line, idx) => {
+    const isFirstLine = idx === 0;
+    const looksLikeIngredient = INGREDIENT_QUANTITY_START.test(line) || INGREDIENT_UNIT_WORDS.test(line);
+    const looksLikeStep = STEP_VERBS.test(line) || TEMP_PATTERN.test(line);
+    const looksLikeNote = line.trim().endsWith("?") || NOTE_START.test(line);
 
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 1000,
-      messages: [{ role: "user", content: prompt }],
-    }),
+    if (looksLikeNote) {
+      notesLines.push(line.replace(NOTE_START, "").trim());
+    } else if (looksLikeIngredient) {
+      ingredients.push(line);
+    } else if (looksLikeStep) {
+      steps.push(line);
+    } else if (isFirstLine && line.length < 60 && !title) {
+      title = line;
+    } else if (line.length > 0) {
+      // Ambiguous line with no clear signal — default to treating it as a step,
+      // since most leftover prose in a recipe tends to be instructional.
+      steps.push(line);
+    }
   });
-  const data = await response.json();
-  const textBlock = (data.content || []).find((b) => b.type === "text");
-  if (!textBlock) throw new Error("No response from parser");
-  const cleaned = textBlock.text.replace(/```json|```/g, "").trim();
-  return JSON.parse(cleaned);
+
+  return {
+    title: title || "",
+    ingredients,
+    steps,
+    notes: notesLines.join(" "),
+  };
 }
 
 async function downloadBackup(recipes) {
@@ -806,7 +818,7 @@ function EditScreen({ recipe, allTags, passcode, onCancel, onSave }) {
     setParsing(true);
     setParseError("");
     try {
-      const result = await parseRecipeWithAI(pasteText);
+      const result = parseRecipeHeuristically(pasteText);
       setTitle(result.title || "");
       setIngredients(result.ingredients?.length ? result.ingredients : [""]);
       setSteps(result.steps?.length ? result.steps : [""]);
@@ -895,7 +907,7 @@ function EditScreen({ recipe, allTags, passcode, onCancel, onSave }) {
           {parseError && <p style={{ color: "var(--error)", fontSize: 13, marginTop: 8 }}>{parseError}</p>}
           <button className="rb-btn-primary" style={{ marginTop: 10 }} onClick={handleParse} disabled={parsing || !pasteText.trim()}>
             {parsing ? <Loader2 size={15} className="rb-spin" /> : <Sparkles size={15} />}
-            {parsing ? "Reading it over..." : "Parse into fields"}
+            {parsing ? "Parsing..." : "Parse into fields"}
           </button>
         </div>
       )}
