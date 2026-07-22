@@ -211,12 +211,11 @@ const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(
 
 const API_URL = "https://recipe-box.lsolson.workers.dev";
 
-async function uploadPhoto(blob, passcode) {
+async function uploadPhoto(blob) {
   const formData = new FormData();
   formData.append("photo", blob, "photo.jpg");
   const res = await fetch(`${API_URL}/api/photos`, {
     method: "POST",
-    headers: { "X-Passcode": passcode },
     body: formData,
   });
   if (!res.ok) throw new Error("Photo upload failed");
@@ -365,59 +364,7 @@ function readBackupFile(file) {
   });
 }
 
-function PasscodeGate({ onAuthed }) {
-  const [passcode, setPasscode] = useState("");
-  const [checking, setChecking] = useState(false);
-  const [error, setError] = useState("");
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!passcode.trim()) return;
-    setChecking(true);
-    setError("");
-    try {
-      const res = await fetch(`${API_URL}/api/recipes`, {
-        headers: { "X-Passcode": passcode },
-      });
-      if (res.status === 401) {
-        setError("That passcode didn't work — try again.");
-        setChecking(false);
-        return;
-      }
-      if (!res.ok) throw new Error("Unexpected response");
-      onAuthed(passcode);
-    } catch (e) {
-      setError("Couldn't reach Recipe Box — check your connection and try again.");
-      setChecking(false);
-    }
-  };
-
-  return (
-    <div style={{ maxWidth: 360, margin: "80px auto 0", textAlign: "center", padding: "0 20px" }}>
-      <ChefHat size={32} color="var(--primary)" strokeWidth={2} style={{ marginBottom: 12 }} />
-      <h1 className="rb-display" style={{ fontSize: 26, fontWeight: 600, marginBottom: 6 }}>Recipe Box</h1>
-      <p style={{ color: "var(--on-surface-variant)", fontSize: 14, marginBottom: 22 }}>Enter your passcode to continue.</p>
-      <form onSubmit={handleSubmit}>
-        <input
-          className="rb-input"
-          type="password"
-          autoFocus
-          value={passcode}
-          onChange={(e) => setPasscode(e.target.value)}
-          placeholder="Passcode"
-          style={{ textAlign: "center", marginBottom: 10 }}
-        />
-        {error && <p style={{ color: "var(--error)", fontSize: 13, marginBottom: 10 }}>{error}</p>}
-        <button className="rb-btn-primary" type="submit" style={{ width: "100%", justifyContent: "center" }} disabled={checking || !passcode.trim()}>
-          {checking ? "Checking..." : "Enter"}
-        </button>
-      </form>
-    </div>
-  );
-}
-
 export default function RecipeBox() {
-  const [passcode, setPasscode] = useState(null);
   const [recipes, setRecipes] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [activeTag, setActiveTag] = useState("All");
@@ -427,12 +374,9 @@ export default function RecipeBox() {
   const [importStatus, setImportStatus] = useState(null); // { type: 'success'|'error', message }
 
   useEffect(() => {
-    if (!passcode) return;
     (async () => {
       try {
-        const res = await fetch(`${API_URL}/api/recipes`, {
-          headers: { "X-Passcode": passcode },
-        });
+        const res = await fetch(`${API_URL}/api/recipes`);
         if (!res.ok) throw new Error("Failed to load recipes");
         const data = await res.json();
         setRecipes(data.recipes || []);
@@ -442,43 +386,34 @@ export default function RecipeBox() {
         setLoaded(true);
       }
     })();
-  }, [passcode]);
+  }, []);
 
-  const saveRecipe = useCallback(
-    async (recipe) => {
-      try {
-        const res = await fetch(`${API_URL}/api/recipes`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Passcode": passcode },
-          body: JSON.stringify(recipe),
-        });
-        if (!res.ok) throw new Error("Save failed");
-      } catch (e) {
-        setStorageError(true);
-      }
-    },
-    [passcode]
-  );
+  const saveRecipe = useCallback(async (recipe) => {
+    try {
+      const res = await fetch(`${API_URL}/api/recipes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(recipe),
+      });
+      if (!res.ok) throw new Error("Save failed");
+    } catch (e) {
+      setStorageError(true);
+    }
+  }, []);
 
   const deleteRecipe = useCallback(
     async (id) => {
       const recipe = recipes.find((r) => r.id === id);
       try {
-        await fetch(`${API_URL}/api/recipes/${id}`, {
-          method: "DELETE",
-          headers: { "X-Passcode": passcode },
-        });
+        await fetch(`${API_URL}/api/recipes/${id}`, { method: "DELETE" });
         if (recipe?.photoKey) {
-          await fetch(`${API_URL}/api/photos/${recipe.photoKey}`, {
-            method: "DELETE",
-            headers: { "X-Passcode": passcode },
-          });
+          await fetch(`${API_URL}/api/photos/${recipe.photoKey}`, { method: "DELETE" });
         }
       } catch (e) { /* noop */ }
       setRecipes((prev) => prev.filter((r) => r.id !== id));
       setView({ screen: "list" });
     },
-    [passcode, recipes]
+    [recipes]
   );
 
   const upsertRecipe = (recipe) => {
@@ -502,7 +437,7 @@ export default function RecipeBox() {
         if (raw.photoDataUrl) {
           try {
             const blob = dataUrlToBlob(raw.photoDataUrl);
-            photoKey = await uploadPhoto(blob, passcode);
+            photoKey = await uploadPhoto(blob);
           } catch (e) { /* keep going without the photo if upload fails */ }
         }
         const recipe = {
@@ -528,15 +463,6 @@ export default function RecipeBox() {
       setImportStatus({ type: "error", message: "That file didn't look like a Recipe Box backup." });
     }
   };
-
-  if (!passcode) {
-    return (
-      <div className="rb-root" style={{ padding: "28px 20px 60px", minHeight: 400 }}>
-        <style>{FONT_STYLES}</style>
-        <PasscodeGate onAuthed={setPasscode} />
-      </div>
-    );
-  }
 
   const allTags = Array.from(new Set(recipes.flatMap((r) => r.tags || []))).sort();
 
@@ -587,7 +513,6 @@ export default function RecipeBox() {
         <EditScreen
           recipe={view.recipe}
           allTags={allTags}
-          passcode={passcode}
           onCancel={() => setView(view.recipe ? { screen: "detail", recipe: view.recipe } : { screen: "list" })}
           onSave={(r) => {
             upsertRecipe(r);
@@ -790,7 +715,7 @@ function DetailScreen({ recipe, onBack, onEdit, onDelete }) {
   );
 }
 
-function EditScreen({ recipe, allTags, passcode, onCancel, onSave }) {
+function EditScreen({ recipe, allTags, onCancel, onSave }) {
   const isNew = !recipe;
   const [mode, setMode] = useState(isNew ? "blank" : "blank");
   const [pasteText, setPasteText] = useState("");
@@ -839,7 +764,7 @@ function EditScreen({ recipe, allTags, passcode, onCancel, onSave }) {
     try {
       const { blob } = await compressImage(file);
       setPhotoPreview(URL.createObjectURL(blob));
-      const key = await uploadPhoto(blob, passcode);
+      const key = await uploadPhoto(blob);
       setPhotoKey(key);
     } catch (e) {
       setPhotoError("Couldn't upload that photo — check your connection and try again.");
@@ -927,7 +852,6 @@ function EditScreen({ recipe, allTags, passcode, onCancel, onSave }) {
               <input
                 type="file"
                 accept="image/*"
-                capture="environment"
                 ref={fileInputRef}
                 style={{ display: "none" }}
                 onChange={handlePhotoSelect}
